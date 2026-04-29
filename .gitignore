@@ -11,3 +11,5 @@
 *.pdf
 .gitignore
 .DS_Store
+/code
+/data
