@@ -3,8 +3,8 @@
 \documentclass[10pt,twocolumn,letterpaper]{article}
 
 %%%%%%%%% PAPER TYPE  - PLEASE UPDATE FOR FINAL VERSION
-% \usepackage{cvpr}              % To produce the CAMERA-READY version
-\usepackage[review]{cvpr}      % To produce the REVIEW version
+\usepackage{cvpr}              % To produce the CAMERA-READY version
+% \usepackage[review]{cvpr}      % To produce the REVIEW version
 % \usepackage[pagenumbers]{cvpr} % To force page numbers, e.g. for an arXiv version
 
 % Import additional packages in the preamble file, before hyperref
@@ -12,7 +12,7 @@
 
 % It is strongly recommended to use hyperref, especially for the review version.
 % hyperref with option pagebackref eases the reviewers' job.
-% Please disable hyperref *only* if you encounter grave issues, 
+% Please disable hyperref *only* if you encounter grave issues,
 % e.g. with the file validation for the camera-ready version.
 %
 % If you comment hyperref and then uncomment it, you should delete *.aux before re-running LaTeX.
@@ -26,38 +26,26 @@
 \def\confYear{2026}
 
 %%%%%%%%% TITLE - PLEASE UPDATE
-\title{\LaTeX\ Author Guidelines for \confName~Proceedings}
+\title{Multi-Modal Per-Class Ensemble with SAM3 Data Augmentation\\for SoccerNet Play-by-Play Action Spotting}
 
 %%%%%%%%% AUTHORS - PLEASE UPDATE
-\author{First Author\\
-Institution1\\
-Institution1 address\\
-{\tt\small firstauthor@i1.org}
-% For a paper whose authors are all at the same institution,
-% omit the following lines up until the closing ``}''.
-% Additional authors and addresses can be added with ``\and'',
-% just like the second author.
-% To save space, use either the email address or home page, not both
-\and
-Second Author\\
-Institution2\\
-First line of institution2 address\\
-{\tt\small secondauthor@i2.org}
+\author{%
+    % Authors in the specified order, linked by superscripts
+    Hoang Quoc Nguyen\textsuperscript{2}, Vanyi Chao\textsuperscript{1,2}, Ankhzaya Jamsrandorj\textsuperscript{2}, Yin May Oo\textsuperscript{1,2}\\ Muhammad Amrulloh Robbani\textsuperscript{1,2}, Kyung-Ryoul Mun\textsuperscript{2}, Jinwook Kim\textsuperscript{2}\\[1ex]
+    \small\textsuperscript{1}AI-Robotics, KIST School, University of Science and Technology, Seoul 02792, Republic of Korea \\
+    \small\textsuperscript{2}Korea Institute of Science and Technology, Seoul 02792, South Korea \\
+    {\tt\small nqhoang@ust.ac.kr, \{ankhzaya, vanyi, yinmay\}@kist.re.kr} \\
+    {\tt\small amrullohrobbani@ust.ac.kr, krmoon02@kist.re.kr, jinwook.kim21@gmail.com}
 }
 
 \begin{document}
 \maketitle
-\input{sec/0_abstract}    
+\input{sec/0_abstract}
 \input{sec/1_intro}
-\input{sec/2_formatting}
-\input{sec/3_finalcopy}
 {
     \small
     \bibliographystyle{ieeenat_fullname}
     \bibliography{main}
 }
-
-% WARNING: do not forget to delete the supplementary pages from your submission 
-% \input{sec/X_suppl}
 
 \end{document}

@@ -1,202 +1,67 @@
-\section{Introduction}
-\label{sec:intro}
+\section{Data Augmentation}
+\label{sec:data}
 
-Please follow the steps outlined below when submitting your manuscript to the IEEE Computer Society Press.
-This style guide now has several important modifications (for example, you are no longer warned against the use of sticky tape to attach your artwork to the paper), so all authors should read this new version.
+The SoccerNet PCBAS~\cite{deliege2021soccernet,cioppa2024soccernet} tactical data provides 13-column per-frame player tracking at 1920$\times$1080, 25fps. However, $\sim$22\% of tracked players are missing bounding boxes and no ball position is provided. We address both gaps with SAM3-based~\cite{ravi2024sam2} pipelines.
 
-%-------------------------------------------------------------------------
-\subsection{Language}
+\noindent\textbf{Bounding box recovery.}
+For frames with $\geq$4 known bboxes, we compute a foot-point homography $H$ mapping pitch coordinates to pixel space at the bottom-center of each bbox. Missing players are projected through $H$ and classified as \emph{out-of-frame} (outside 1920$\times$1080 $\pm$ 50px), \emph{replay} ($<$4 reference bboxes), or \emph{in-frame}. In-frame candidates are matched to SAM3 ``person'' detections (conf $\geq 0.3$) filtered by size (area $\geq 80$px, $h/w \geq 0.7$, $w \leq 250$, $h \leq 400$) and cross-validated against existing GT bboxes (IoU $> 0.2$). Remaining detections are assigned by foot-point Euclidean distance ($\leq 150$px). SAM3 runs every 5th frame with $\pm 2$-frame propagation, filling $\sim$6.8\% of missing rows---the genuinely visible but untracked players.
 
-All manuscripts must be in English.
+\noindent\textbf{Ball detection.}
+SAM3 with ``soccer ball'' (conf $\geq 0.15$) generates per-frame candidates filtered by size ($\leq$50px), aspect ratio ($\leq$2.5), dynamic pitch bounds from player positions, and proximity to nearest player ($\leq$300px). Viterbi DP selects the optimal trajectory: emission costs combine detection confidence and a player-proximity bonus (up to 40 points for $<$80px); transition costs penalize teleportation ($0.3\times$ for $\leq$120px/frame, $1\times$ for $\leq$360px, $5\times$ beyond). A 5-frame median filter and linear interpolation across gaps $\leq$4 frames smooth the output.
 
-\subsection{Dual submission}
+\section{Feature Engineering}
+\label{sec:features}
 
-Please refer to the author guidelines on the \confName\ \confYear\ web page for a
-discussion of the policy on dual submissions.
+\noindent\textbf{Motion (34-dim).} From raw per-player tracking $(x, y, v_x, v_y)$ we compute: \emph{kinematics} (13-dim: position, velocity, speed, acceleration, jerk, movement direction $\theta = \text{atan2}(v_y, v_x)/\pi$, direction change), \emph{identity} (14-dim: 13-role one-hot + team indicator), and \emph{inter-player} (7-dim: nearest teammate/opponent distances, relative velocity to nearest opponent, opponent pressure count within radius $< 0.05$, attacking and defending goal proximity).
 
-\subsection{Paper length}
-Papers, excluding the references section, must be no longer than eight pages in length.
-The references section will not be included in the page count, and there is no limit on the length of the references section.
-For example, a paper of eight pages with two pages of references would have a total length of 10 pages.
-{\bf There will be no extra page charges for \confName\ \confYear.}
+\noindent\textbf{Visual (768-dim).} Frozen DINOv2-ViT-B/14~\cite{oquab2024dinov2} extracts patch features at 518$\times$518 resolution. Per-player ROI-Align ($3{\times}3$) over bounding boxes produces 768-dim embeddings. A binary visibility mask is appended (769-dim input). For players with missing bboxes, a learned 768-dim \texttt{missing\_vis} embedding replaces the zero-vector.
 
-Overlength papers will simply not be reviewed.
-This includes papers where margins and formatting are deemed to have been significantly altered from those laid down by this style guide.
-Note that this \LaTeX\ guide already sets the figure captions and references in a smaller font.
-The reason why such papers will not be reviewed is that there is no provision for supervised revisions of manuscripts.
-The review process cannot determine the suitability of the paper for presentation in eight pages if it is reviewed in 11 pages.
+\noindent\textbf{Ball (6-dim).} Per-player ball features from detected positions (Sec.~\ref{sec:data}): distance to ball, relative displacement $\Delta x/\Delta y$ normalized by image dimensions, binary \texttt{is\_closest} flag, and ball velocity $(v_x, v_y)$ via $\pm$3-frame finite differences. This was the single largest additive feature (+5.5 F1 points).
 
-%-------------------------------------------------------------------------
-\subsection{The ruler}
-The \LaTeX\ style defines a printed ruler that should be present in the version submitted for review.
-The ruler is provided in order that reviewers may comment on particular lines in the paper without circumlocution.
-If you are preparing a document using a non-\LaTeX\ document preparation system, arrange for an equivalent ruler to appear on the final output pages.
-The presence or absence of the ruler should not change the appearance of any other content on the page.
-The camera-ready copy should not contain a ruler.
-(\LaTeX\ users may use the options of \texttt{cvpr.sty} to switch between different versions.)
+\noindent\textbf{Scene (768-dim).} The DINOv2 CLS token provides a global scene descriptor capturing pitch region, camera zoom, and broadcast state. This is broadcast identically to all 22 player slots before fusion.
 
-Reviewers:
-note that the ruler measurements do not align well with lines in the paper --- this turns out to be very difficult to do well when the paper contains many figures and equations, and, when done, looks ugly.
-Use fractional references (\eg, this line is $087.5$), although in most cases the approximate location would be adequate.
+\section{Model Architecture}
+\label{sec:model}
 
+\noindent\textbf{Stage 1: Event detection.}
+A DeepSets~\cite{zaheer2017deep} + dilated temporal conv network operates on 41-dim features (the 34-dim motion features plus goalkeeper flag, team centroid, and padding). Per-player MLP embeddings are aggregated via max+mean pooling, then 10 dilated 1D residual blocks~\cite{he2016deep} (GroupNorm, GELU, dilations $2^0$--$2^9$, receptive field $\sim$1024 frames) produce per-frame event scores. Candidates: $\sigma(\text{score}) > 0.3$, de-duplicated to one per 12 frames.
 
-\subsection{Paper ID}
-Make sure that the Paper ID from the submission system is visible in the version submitted for review (replacing the ``*****'' you see in this document).
-If you are using the \LaTeX\ template, \textbf{make sure to update paper ID in the appropriate place in the tex file}.
+\noindent\textbf{Stage 2: Multi-modal classification.}
+Per candidate, a 100-frame window feeds four branches: motion (MLP $34 \to 128$ + 6 BiBlocks, center-frame extraction), visual ($769 \to 128$), ball ($6 \to 32$), scene ($768 \to 128$). All branches are concatenated per player and projected to 256-dim, then two transformer encoder layers~\cite{vaswani2017attention} (4 heads, FFN 512, dropout 0.15) model cross-player interactions. Action class is predicted from max-pooled features; player identity from per-slot logits. Deep variants use 384-dim, 8 heads, and 3 transformer layers.
 
+\noindent\textbf{Robustness to missing visual.}
+We train robust variants with: (1) a learned 768-dim \texttt{missing\_vis} embedding replacing zero-vectors for missing bboxes, (2) visual dropout---25\% of batches replace all visual with \texttt{missing\_vis}, simulating no-visual frames, and (3) KL consistency regularization between predictions with/without visual. The \textbf{RobustScene} family combines all three with the scene branch.
 
-\subsection{Mathematics}
+\noindent\textbf{Training.}
+All models are trained on train+val combined (102 game halves, $\sim$6200 events). We use cross-entropy with class weights $[0.1, 1, 0.8, 5, 5, 8, 3, 20, 8]$ reflecting severe class imbalance---pass has 3059 examples while tackle has only 26. AdamW~\cite{loshchilov2019adamw} (lr=$5{\times}10^{-4}$, wd=$10^{-4}$), batch size 64, 25 epochs. Temporal jitter ($\pm$3 frames) augments event frame alignment. We train 25 model variants spanning 8 architecture families (base, deep, wide, ball-window, ball-v2, GSF, robust, scene-robust) across multiple seeds ($\{42, 123, 456, 789\}$), yielding diverse predictions for ensembling.
 
-Please, number all of your sections and displayed equations as in these examples:
-\begin{equation}
-  E = m\cdot c^2
-  \label{eq:important}
-\end{equation}
-and
-\begin{equation}
-  v = a\cdot t.
-  \label{eq:also-important}
-\end{equation}
-It is important for the reader to be able to refer to any particular equation.
-Just because you did not refer to it in the text does not mean that some future reader might not need to refer to it.
-It is cumbersome to have to use circumlocutions like ``the equation second from the top of page 3 column 1''.
-(Note that the ruler will not be present in the final copy, so is not an alternative to equation numbers).
-All authors will benefit from reading Mermin's description of how to write mathematics:
-\url{http://www.pamitc.org/documents/mermin.pdf}.
+\noindent\textbf{Inference.}
+Per-class decoding with optimized thresholds. TTA averages softmax over 5 offsets $\{-4,-2,0,+2,+4\}$. Per-class ensemble selects 2--12 of 25 variants via greedy leave-one-out. RobustScene improves most classes but degrades tackle precision (0.40 $\to$ 0.20), so it is excluded from that subset---ensemble composition must be tuned per-class. Per-class NMS (12-frame window) removes duplicates.
 
-\subsection{Blind review}
+\noindent\textbf{Results} are shown in Table~\ref{tab:challenge}. Recall is strongly affected by bbox availability (drive: 0.761 with bbox vs.\ 0.401 without; throw-in: 0.913 vs.\ 0.755) and replay frames (drive: 0.497, header: 0.167), motivating our bbox-filling and robustness pipelines. The micro-macro F1 gap (0.712 vs.\ 0.557) reflects class imbalance.
 
-Many authors misunderstand the concept of anonymizing for blind review.
-Blind review does not mean that one must remove citations to one's own work---in fact it is often impossible to review a paper unless the previous citations are known and available.
+Key findings from 200+ experiments: (1) tracking data provides 80\%+ of signal---a motion-only model already reaches F1 $\sim$0.63; (2) ball proximity is the single largest additive feature (+5.5 F1), while more complex ball encodings (IoU overlap, altitude, 8-dim variants) offered no improvement over the simple 6-dim distance-based features; (3) architectural diversity (different branch designs, depths, feature variants) outperforms seed diversity for ensembles; (4) temporal video features (VideoMAE~\cite{tong2022videomae}, ViViT, V-JEPA2~\cite{assran2025vjepa2}) consistently failed to improve over single-frame DINOv2, likely because tracking data already captures temporal dynamics; (5) alternative image backbones (DINOv3, SigLIP2, CRADIO) all performed comparably to DINOv2-B---backbone choice does not matter when ROI features are pooled to a single vector; (6) rare classes (tackle: 26 examples, block: 78) are fundamentally data-limited---no training trick (focal loss, asymmetric loss, oversampling, curriculum learning, hard negative mining, contrastive losses) compensated for the scarcity; (7) post-processing heuristics (transition constraints, position-based gating, cross-class voting) either hurt rare classes or showed no effect, confirming that the model's learned representations already capture the relevant patterns.
 
-Blind review means that you do not use the words ``my'' or ``our'' when citing previous work.
-That is all.
-(But see below for tech reports.)
-
-Saying ``this builds on the work of Lucy Smith [1]'' does not mean that you are Lucy Smith;
-it says that you are building on her work.
-If you are Smith and Jones, do not say ``as we show in [7]'', say ``as Smith and Jones show in [7]'' and at the end of the paper, include reference 7 as you would any other cited work.
-
-An example of a bad paper just asking to be rejected:
-\begin{quote}
-\begin{center}
-    An analysis of the frobnicatable foo filter.
-\end{center}
-
-   In this paper, we present a performance analysis of our previous paper [1], and show that it is inferior to all previously known methods.
-   Why the previous paper was accepted without this analysis is beyond me.
-
-   [1] Removed for blind review
-\end{quote}
-
-
-An example of an acceptable paper:
-\begin{quote}
-\begin{center}
-     An analysis of the frobnicatable foo filter.
-\end{center}
-
-   In this paper, we present a performance analysis of the paper of Smith \etal [1], and show it to be inferior to all previously known methods.
-   Why the previous paper was accepted without this analysis is beyond me.
-
-   [1] Smith, L and Jones, C. ``The frobnicatable foo filter, a fundamental contribution to human knowledge''. Nature 381(12), 1-213.
-\end{quote}
-
-If you are making a submission to another conference at the same time that covers similar or overlapping material, you may need to refer to that submission to explain the differences, just as you would if you had previously published related work.
-In such cases, include the anonymized parallel submission~\cite{Authors14} as supplemental material and cite it as
-\begin{quote}
-[1] Authors. ``The frobnicatable foo filter'', F\&G 2014 Submission ID 324, Supplied as supplemental material {\tt fg324.pdf}.
-\end{quote}
-
-Finally, you may feel you need to tell the reader that more details can be found elsewhere and refer them to a technical report.
-For conference submissions, the paper must stand on its own, and not {\em require} the reviewer to go to a tech report for further details.
-Thus, you may say in the body of the paper ``further details may be found in~\cite{Authors14b}''.
-Then submit the tech report as supplemental material.
-Again, do not assume that the reviewers will read this material.
-
-Sometimes your paper is about a problem that you tested using a tool that is widely known to be restricted to a single institution.
-For example, let's say it's 1969, you have solved a key problem on the Apollo lander, and you believe that the 1970 audience would like to hear about your
-solution.
-The work is a development of your celebrated 1968 paper entitled ``Zero-g frobnication: How being the only people in the world with access to the Apollo lander source code makes us a wow at parties'', by Zeus \etal.
-
-You can handle this paper like any other.
-Do not write ``We show how to improve our previous work [Anonymous, 1968].
-This time we tested the algorithm on a lunar lander [name of lander removed for blind review]''.
-That would be silly, and would immediately identify the authors.
-Instead write the following:
-\begin{quotation}
-\noindent
-   We describe a system for zero-g frobnication.
-   This system is new because it handles the following cases:
-   A, B.  Previous systems [Zeus et al. 1968] did not  handle case B properly.
-   Ours handles it by including a foo term in the bar integral.
-
-   ...
-
-   The proposed system was integrated with the Apollo lunar lander, and went all the way to the moon, don't you know.
-   It displayed the following behaviours, which show how well we solved cases A and B: ...
-\end{quotation}
-As you can see, the above text follows standard scientific convention, reads better than the first version, and does not explicitly name you as the authors.
-A reviewer might think that it is likely that the new article was written by Zeus \etal, but cannot make any decision based on that guess.
-He or she would have to be sure that no other authors could have been contracted to solve problem B.
-\medskip
-
-\noindent
-FAQ\medskip\\
-{\bf Q:} Are acknowledgements OK?\\
-{\bf A:} No.  Leave them for the final copy.\medskip\\
-{\bf Q:} How do I cite my results reported in open challenges?
-{\bf A:} To conform with the double-blind review policy, you can report results of other challenge participants together with your results in your paper.
-However, for your results, you should not identify yourself and should not mention your participation in the challenge.
-Instead, present your results referring to the method proposed in your paper and draw conclusions based on the experimental comparison with other results.\medskip\\
-
-\begin{figure}[t]
-  \centering
-  \fbox{\rule{0pt}{2in} \rule{0.9\linewidth}{0pt}}
-   %\includegraphics[width=0.8\linewidth]{egfigure.eps}
-
-   \caption{Example of caption.
-   It is set in Roman so that mathematics (always set in Roman: $B \sin A = A \sin B$) may be included without an ugly clash.}
-   \label{fig:onecol}
-\end{figure}
-
-\subsection{Miscellaneous}
-
-\noindent
-Compare the following:\\
-\begin{tabular}{ll}
- \verb'$conf_a$' &  $conf_a$ \\
- \verb'$\mathit{conf}_a$' & $\mathit{conf}_a$
-\end{tabular}\\
-See The \TeX book, p165.
-
-The space after \eg, meaning ``for example'', should not be a sentence-ending space.
-So \eg is correct, {\em e.g.} is not.
-The provided \verb'\eg' macro takes care of this.
-
-When citing a multi-author paper, you may save space by using ``et alia'', shortened to ``\etal'' (not ``{\em et.\ al.}'' as ``{\em et}'' is a complete word).
-If you use the \verb'\etal' macro provided, then you need not worry about double periods when used at the end of a sentence as in Alpher \etal.
-However, use it only when there are three or more authors.
-Thus, the following is correct:
-   ``Frobnication has been trendy lately.
-   It was introduced by Alpher~\cite{Alpher02}, and subsequently developed by
-   Alpher and Fotheringham-Smythe~\cite{Alpher03}, and Alpher \etal~\cite{Alpher04}.''
-
-This is incorrect: ``... subsequently developed by Alpher \etal~\cite{Alpher03} ...'' because reference~\cite{Alpher03} has only two authors.
-
-\begin{figure*}
-  \centering
-  \begin{subfigure}{0.68\linewidth}
-    \fbox{\rule{0pt}{2in} \rule{.9\linewidth}{0pt}}
-    \caption{An example of a subfigure.}
-    \label{fig:short-a}
-  \end{subfigure}
-  \hfill
-  \begin{subfigure}{0.28\linewidth}
-    \fbox{\rule{0pt}{2in} \rule{.9\linewidth}{0pt}}
-    \caption{Another example of a subfigure.}
-    \label{fig:short-b}
-  \end{subfigure}
-  \caption{Example of a short caption, which should be centered.}
-  \label{fig:short}
-\end{figure*}
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lccc}
+\hline
+\textbf{Class} & \textbf{P} & \textbf{R} & \textbf{F1} \\
+\hline
+Drive & .682 & .704 & .693 \\
+Pass & .809 & .739 & .773 \\
+Cross & .850 & .788 & .818 \\
+Throw-in & .766 & .828 & .796 \\
+Shot & .606 & .597 & .602 \\
+Header & .382 & .448 & .412 \\
+Tackle & .400 & .083 & .138 \\
+Block & .213 & .235 & .224 \\
+\hline
+\textbf{Macro} & .589 & .553 & \textbf{.557} \\
+\textbf{Micro} & .721 & .703 & .712 \\
+\hline
+\end{tabular}
+\caption{Challenge set results (6 game halves).}
+\label{tab:challenge}
+\end{table}

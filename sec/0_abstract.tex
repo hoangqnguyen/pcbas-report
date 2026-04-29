@@ -1,7 +1,3 @@
 \begin{abstract}
-The ABSTRACT is to be in fully justified italicized text, at the top of the left-hand column, below the author and affiliation information.
-Use the word ``Abstract'' as the title, in 12-point Times, boldface type, centered relative to the column, initially capitalized.
-The abstract is to be in 10-point, single-spaced type.
-Leave two blank lines after the Abstract, then begin the main text.
-Look at previous \confName abstracts to get a feel for style and length.
+We present our system for the SoccerNet Play-by-Play Action Spotting (PCBAS) challenge. We augment the provided tactical tracking data by (a) recovering missing player bounding boxes via SAM3 detection and homography projection, and (b) detecting ball positions using SAM3 with Viterbi trajectory optimization. A two-stage model---frame-level event detection followed by multi-modal classification fusing motion, visual (DINOv2), ball proximity, and scene features through a cross-player transformer---is ensembled per-class over 25 diverse model variants with test-time augmentation, achieving a macro F1 of 0.5569 on the challenge set.
 \end{abstract}
